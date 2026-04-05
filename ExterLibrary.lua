@@ -10,8 +10,11 @@
     - Notification system
     - Premium dark style with gradients + smooth tween
 
-    Usage:
+    Usage (local file):
     local Exter = loadstring(readfile("ExterLibrary.lua"))()
+
+    Usage (direct GitHub raw):
+    local Exter = loadstring(game:HttpGet("https://raw.githubusercontent.com/YOUR_USERNAME/Exter-Library-v2/main/ExterLibrary.lua"))()
 
     local win = Exter:CreateWindow({
         Title = "Exter Premium",
