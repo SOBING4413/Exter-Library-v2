@@ -1,0 +1,141 @@
+local H = dofile("tests/harness.lua")
+local Mock = H.Mock
+local Library = H.newLibrary()
+local Kit = H.load("src/Kit.lua")(Library)
+print("-- Kit")
+
+H.test("style sampling reads the template", function()
+	H.eq(Kit.Style.Title, 15, "title size sampled")
+	H.eq(Kit.Style.Family, "rbxasset://fonts/families/Montserrat.json", "font family sampled")
+	H.eq(Kit.Style.Corner.Offset, 8, "corner sampled")
+	H.eq(Kit.Style.Height, 42, "height sampled")
+end)
+
+H.test("style sampling is lazy: works when the template appears after load", function()
+	local L = H.newLibrary()
+	local real = L._Internal.GetElements()
+	local empty = Instance.new("Frame")
+	L._Internal.GetElements = function() return empty end
+	local K = H.load("src/Kit.lua")(L)
+	H.eq(K.Style.Title, 14, "defaults while the window does not exist yet")
+	L._Internal.GetElements = function() return real end
+	local Tab, ctx = H.newTab(L, K)
+	K.Card(ctx, {})
+	H.eq(K.Style.Title, 15, "sampled on first element")
+	H.eq(K.Style.Height, 42, "height sampled")
+end)
+
+H.test("number helpers", function()
+	H.eq(Kit.Snap(0.30000000000000004, 0.1), 0.3, "snap noise")
+	H.eq(Kit.Snap(17, 5, 0), 15, "snap to step")
+	H.eq(Kit.Decimals(0.25), 2, "decimals")
+	H.eq(Kit.FormatNumber(1234567.891, 1), "1,234,567.9", "format with commas")
+	H.eq(Kit.FormatNumber(-1234, 0), "-1,234", "negative")
+	H.eq(Kit.Hex(Color3.fromRGB(255, 128, 0)), "#FF8000", "hex")
+	H.expect(Kit.FromHex("#FF8000") == Color3.fromRGB(255, 128, 0), "from hex")
+end)
+
+H.test("signal connect / once / wait / disconnect", function()
+	local s, n = Kit.Signal.new(), 0
+	local c = s:Connect(function(v) n = n + v end)
+	s:Once(function(v) n = n + 100 end)
+	s:Fire(1); s:Fire(1)
+	H.eq(n, 102, "connect+once")
+	c:Disconnect(); s:Fire(1)
+	H.eq(n, 102, "disconnect")
+	local got
+	task.spawn(function() got = s:Wait() end)
+	s:Fire("x")
+	H.eq(got, "x", "wait")
+end)
+
+H.test("register extends existing and future containers", function()
+	local Tab = H.newTab(Library, Kit)
+	Kit.Register("Probe", function(ctx, s) return { Name = s.Name, ctx = ctx } end)
+	local r = Tab:CreateProbe({ Name = "a" })
+	H.eq(r.Name, "a", "late registration reaches old container")
+	local Tab2 = H.newTab(Library, Kit)
+	H.eq(Tab2:CreateProbe({ Name = "b" }).Name, "b", "new container")
+	H.eq(Tab:CreateProbe("short").Name, "short", "string shorthand")
+	H.expect(rawget(Tab, "CreateButton") ~= nil, "core methods untouched")
+end)
+
+H.test("card + element lifecycle", function()
+	local Tab, ctx, page = H.newTab(Library, Kit)
+	local card = Kit.Card(ctx, { Name = "X", Height = 50 })
+	H.eq(card.Parent, page, "card parented to container")
+	local calls
+	local settings = { Name = "X", Callback = function(v) calls = (calls or 0) + v end }
+	local el = Kit.Element(ctx, "Probe", card, settings, "FlagX")
+	H.expect(Library.Options.FlagX == el, "flag registered")
+	el:_emit(2)
+	H.eq(calls, 2, "callback fired")
+	local seen
+	el:OnChanged(function(v) seen = v end)
+	el:_emit(7)
+	H.eq(seen, 7, "Changed signal fired")
+	el:SetDisabled(true)
+	H.expect(card:FindFirstChild("ExterDisabledMask") ~= nil, "disabled mask")
+	el:SetDisabled(false); Mock.advance(1)
+	H.expect(card:FindFirstChild("ExterDisabledMask") == nil, "mask removed")
+	el:SetVisible(false); H.eq(card.Visible, false, "hidden")
+	el:Destroy()
+	H.expect(Library.Options.FlagX == nil, "flag released")
+	H.expect(card.Parent == nil, "frame destroyed")
+	el:Destroy() -- idempotent
+end)
+
+H.test("callback errors are contained", function()
+	local Tab, ctx = H.newTab(Library, Kit)
+	local card = Kit.Card(ctx, {})
+	local el = Kit.Element(ctx, "Probe", card, { Name = "Boom", Callback = function() error("kaboom") end })
+	el:_emit(1) -- must not throw
+	Mock.advance(1)
+end)
+
+H.test("persist registers a config parser", function()
+	local Tab, ctx = H.newTab(Library, Kit)
+	local el = Kit.Element(ctx, "Probe2", Kit.Card(ctx, {}), { Name = "P" }, "F2")
+	el.v = 5
+	Kit.Persist("Probe2", function(o) return o.v end, function(o, v) o.v = v end)
+	local saved = Library._Parsers.Probe2.Save("F2", el)
+	H.eq(saved.value, 5, "save")
+	Library._Parsers.Probe2.Load("F2", { value = 9 })
+	H.eq(el.v, 9, "load")
+end)
+
+H.test("gradient follows the theme", function()
+	local Tab, ctx = H.newTab(Library, Kit)
+	local frame = Kit.Frame(ctx.Frame)
+	local g = Kit.Gradient(frame)
+	Library:SetTheme({ Color3.fromRGB(1, 2, 3), Color3.fromRGB(4, 5, 6), Color3.fromRGB(7, 8, 9) })
+	H.expect(g.Color.Keypoints[1].Value == Color3.fromRGB(1, 2, 3), "gradient re-themed")
+end)
+
+H.test("drag helper tracks press/move/release", function()
+	local Tab, ctx = H.newTab(Library, Kit)
+	local frame = Kit.Frame(ctx.Frame)
+	local xs = {}
+	local d = Kit.Drag(frame, function(x) xs[#xs + 1] = x end)
+	Mock.press(frame, 10, 0); Mock.move(20, 0); Mock.move(30, 0); Mock.release(frame, 30, 0); Mock.move(99, 0)
+	H.eq(#xs, 3, "3 updates then stop after release")
+	H.eq(xs[3], 30, "last x")
+end)
+
+H.test("hold repeat accelerates and stops", function()
+	local Tab, ctx = H.newTab(Library, Kit)
+	local b = Kit.Button(ctx.Frame)
+	local n = 0
+	Kit.HoldRepeat(b, function() n = n + 1 end)
+	Mock.press(b, 0, 0)
+	H.eq(n, 1, "fires once immediately")
+	Mock.advance(1.5)
+	H.expect(n > 3, "repeats while held (got " .. n .. ")")
+	Mock.release(b, 0, 0)
+	local at = n
+	Mock.advance(2)
+	H.eq(n, at, "stops after release")
+end)
+
+_G.__FAILED = H.failed
+print(string.format("   %d passed, %d failed", H.passed, H.failed))
